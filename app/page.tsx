@@ -6,10 +6,17 @@ type Item = {
   codigo: string;
   descricao: string;
   ncm: string;
+  cst: string;
   cfop: string;
+  unidade: string;
   quantidade: number | null;
   valorUnitario: number | null;
   valorTotal: number | null;
+  baseIcms: number | null;
+  valorIcms: number | null;
+  valorIpi: number | null;
+  aliquotaIcms: number | null;
+  aliquotaIpi: number | null;
 };
 
 type Nota = {
@@ -82,6 +89,35 @@ const money = (value?: string) =>
 const find = (text: string, expression: RegExp) =>
   text.match(expression)?.[1]?.trim() ?? "";
 
+function parseItems(lines: string[]): Item[] {
+  const items: Item[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[|;]/g, " ").replace(/\s+/g, " ").trim();
+    const match = line.match(
+      /^(\d{4,10})\s+(.+?)\s+(\d{8})\s+(\d{2,3})\s+(\d{4})\s+([A-Z]{1,3})\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?$/i,
+    );
+    if (!match) continue;
+    const values = match.slice(7).map((value) => money(value));
+    items.push({
+      codigo: match[1],
+      descricao: match[2],
+      ncm: match[3],
+      cst: match[4],
+      cfop: match[5],
+      unidade: match[6].toUpperCase(),
+      quantidade: values[0],
+      valorUnitario: values[1],
+      valorTotal: values[2],
+      baseIcms: values[3] ?? null,
+      valorIcms: values[4] ?? null,
+      valorIpi: values[5] ?? null,
+      aliquotaIcms: values[6] ?? null,
+      aliquotaIpi: values[7] ?? null,
+    });
+  }
+  return items;
+}
+
 function extractNota(text: string): Nota {
   const normalized = text.replace(/\r/g, "").replace(/[ \t]+/g, " ");
   const chave = normalized.match(/(?:\d[\s.]*){44}/)?.[0] ?? "";
@@ -131,12 +167,39 @@ function extractNota(text: string): Nota {
       ),
     },
     transporte: { ...emptyNota.transporte },
+    itens: parseItems(lines),
     informacoesComplementares: find(
       normalized,
       /INFORMA[ÇC][ÕO]ES COMPLEMENTARES\s*\n?([\s\S]+)$/i,
     ),
     textoOriginal: text,
   };
+}
+
+async function prepareImage(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(3, 3200 / bitmap.width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return file;
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let index = 0; index < image.data.length; index += 4) {
+    const gray =
+      image.data[index] * 0.299 +
+      image.data[index + 1] * 0.587 +
+      image.data[index + 2] * 0.114;
+    const contrasted = Math.max(0, Math.min(255, (gray - 128) * 1.45 + 145));
+    image.data[index] = contrasted;
+    image.data[index + 1] = contrasted;
+    image.data[index + 2] = contrasted;
+  }
+  context.putImageData(image, 0, 0);
+  return new Promise((resolve) =>
+    canvas.toBlob((blob) => resolve(blob ?? file), "image/jpeg", 0.94),
+  );
 }
 
 function Field({
@@ -191,7 +254,8 @@ export default function Home() {
           }
         },
       });
-      const result = await worker.recognize(file);
+      const prepared = await prepareImage(file);
+      const result = await worker.recognize(prepared);
       await worker.terminate();
       setNota(extractNota(result.data.text));
       setStatus("done");
@@ -205,6 +269,40 @@ export default function Home() {
     setNota((current) => ({
       ...current,
       destinatario: { ...current.destinatario, [key]: value },
+    }));
+  }
+
+  function updateItem(index: number, patch: Partial<Item>) {
+    setNota((current) => ({
+      ...current,
+      itens: current.itens.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    }));
+  }
+
+  function addItem() {
+    setNota((current) => ({
+      ...current,
+      itens: [
+        ...current.itens,
+        {
+          codigo: "",
+          descricao: "",
+          ncm: "",
+          cst: "",
+          cfop: "",
+          unidade: "UN",
+          quantidade: null,
+          valorUnitario: null,
+          valorTotal: null,
+          baseIcms: null,
+          valorIcms: null,
+          valorIpi: null,
+          aliquotaIcms: null,
+          aliquotaIpi: null,
+        },
+      ],
     }));
   }
 
@@ -312,6 +410,50 @@ export default function Home() {
             </div>
           ) : (
             <>
+              <div className="itemsHeader">
+                <div>
+                  <p className="mini">PRODUTOS E SERVIÇOS</p>
+                  <h3>{nota.itens.length} {nota.itens.length === 1 ? "item reconhecido" : "itens reconhecidos"}</h3>
+                </div>
+                <button className="linkButton addItem" onClick={addItem}>+ Adicionar item</button>
+              </div>
+
+              {nota.itens.length === 0 ? (
+                <div className="itemsWarning">
+                  <strong>A tabela não ficou legível nesta foto.</strong>
+                  <p>Aproxime a câmera até as letras da tabela ficarem nítidas ou adicione as linhas manualmente.</p>
+                  <button className="secondary compact" onClick={addItem}>Adicionar primeiro item</button>
+                </div>
+              ) : (
+                <div className="itemsList">
+                  {nota.itens.map((item, index) => (
+                    <article className="itemCard" key={`${item.codigo}-${index}`}>
+                      <div className="itemNumber">{String(index + 1).padStart(2, "0")}</div>
+                      <label className="itemDescription">
+                        <span>Descrição</span>
+                        <input value={item.descricao} onChange={(event) => updateItem(index, { descricao: event.target.value })} />
+                      </label>
+                      <button
+                        className="removeItem"
+                        aria-label={`Remover item ${index + 1}`}
+                        onClick={() => setNota((current) => ({ ...current, itens: current.itens.filter((_, itemIndex) => itemIndex !== index) }))}
+                      >×</button>
+                      <div className="itemFields">
+                        <label><span>Código</span><input value={item.codigo} onChange={(event) => updateItem(index, { codigo: event.target.value })} /></label>
+                        <label><span>NCM</span><input value={item.ncm} onChange={(event) => updateItem(index, { ncm: event.target.value })} /></label>
+                        <label><span>CFOP</span><input value={item.cfop} onChange={(event) => updateItem(index, { cfop: event.target.value })} /></label>
+                        <label><span>Un.</span><input value={item.unidade} onChange={(event) => updateItem(index, { unidade: event.target.value })} /></label>
+                        <label><span>Qtd.</span><input inputMode="decimal" value={item.quantidade ?? ""} onChange={(event) => updateItem(index, { quantidade: money(event.target.value) })} /></label>
+                        <label><span>Valor unit.</span><input inputMode="decimal" value={item.valorUnitario ?? ""} onChange={(event) => updateItem(index, { valorUnitario: money(event.target.value) })} /></label>
+                        <label><span>Valor total</span><input inputMode="decimal" value={item.valorTotal ?? ""} onChange={(event) => updateItem(index, { valorTotal: money(event.target.value) })} /></label>
+                        <label><span>ICMS</span><input inputMode="decimal" value={item.valorIcms ?? ""} onChange={(event) => updateItem(index, { valorIcms: money(event.target.value) })} /></label>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <div className="subheading"><span>Dados gerais da nota</span></div>
               <div className="formGrid">
                 <Field label="Número da nota" value={nota.numero} onChange={(numero) => setNota({ ...nota, numero })} />
                 <Field label="Série" value={nota.serie} onChange={(serie) => setNota({ ...nota, serie })} />
