@@ -43,3 +43,5 @@ next-env.d.ts
 /.dev-*.log
 /magic-string-*.tgz
 /package/
+/.site-package.tar.gz
+/*.traineddata
