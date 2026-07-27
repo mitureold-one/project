@@ -162,7 +162,6 @@ function parseItems(lines: string[]): Item[] {
     ) {
       continue;
     }
-    if (items.some((item) => item.codigo === codigo && item.ncm === ncm)) continue;
     items.push({
       codigo,
       descricao: match[2]
@@ -496,48 +495,63 @@ function CameraScanner({
 }
 
 export default function Home() {
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
   const [nota, setNota] = useState<Nota>(emptyNota);
   const [status, setStatus] = useState<"idle" | "reading" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [copied, setCopied] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(0);
 
   useEffect(() => {
-    if (!file) {
-      setPreview("");
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    const urls = files.map((file) => URL.createObjectURL(file));
+    setPreviews(urls);
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, [files]);
 
   const json = useMemo(() => JSON.stringify(nota, null, 2), [nota]);
 
   async function scan() {
-    if (!file) return;
+    if (!files.length) return;
     setStatus("reading");
     setProgress(2);
     try {
       const { createWorker } = await import("tesseract.js");
+      let pageIndex = 0;
       const worker = await createWorker("por", 1, {
         logger: (message) => {
           if (message.status === "recognizing text") {
-            setProgress(Math.round((message.progress ?? 0) * 100));
+            const pageProgress = (pageIndex + (message.progress ?? 0)) / files.length;
+            setProgress(Math.round(pageProgress * 100));
           }
         },
       });
-      const prepared = await prepareImage(file);
-      const result = await worker.recognize(prepared);
+      const texts: string[] = [];
+      for (pageIndex = 0; pageIndex < files.length; pageIndex++) {
+        setCurrentPage(pageIndex + 1);
+        const prepared = await prepareImage(files[pageIndex]);
+        const result = await worker.recognize(prepared);
+        texts.push(result.data.text);
+      }
       await worker.terminate();
-      setNota(extractNota(result.data.text));
+      setNota(extractNota(texts.join("\n\n--- PÁGINA ADICIONAL ---\n\n")));
       setStatus("done");
       setProgress(100);
     } catch {
       setStatus("error");
     }
+  }
+
+  function addFiles(selected: FileList | null) {
+    if (!selected?.length) return;
+    setFiles((current) => [...current, ...Array.from(selected)].slice(0, 10));
+    setStatus("idle");
+  }
+
+  function removePage(index: number) {
+    setFiles((current) => current.filter((_, pageIndex) => pageIndex !== index));
+    setStatus("idle");
   }
 
   function patchRecipient(key: keyof Nota["destinatario"], value: string) {
@@ -617,9 +631,9 @@ export default function Home() {
           </p>
         </div>
         <div className="stepRow" aria-label="Etapas">
-          <span className={file ? "step complete" : "step active"}>1</span>
+          <span className={files.length ? "step complete" : "step active"}>1</span>
           <i />
-          <span className={status === "done" ? "step complete" : file ? "step active" : "step"}>2</span>
+          <span className={status === "done" ? "step complete" : files.length ? "step active" : "step"}>2</span>
           <i />
           <span className={status === "done" ? "step active" : "step"}>3</span>
         </div>
@@ -632,10 +646,10 @@ export default function Home() {
               <p className="mini">PASSO 01</p>
               <h2>Adicionar documento</h2>
             </div>
-            {file && <button className="linkButton" onClick={() => { setFile(null); setStatus("idle"); setNota(emptyNota); }}>Trocar foto</button>}
+            {files.length > 0 && <button className="linkButton" onClick={() => { setFiles([]); setStatus("idle"); setNota(emptyNota); }}>Limpar páginas</button>}
           </div>
 
-          {!preview ? (
+          {!previews.length ? (
             <div className="dropzone">
               <span className="cameraIcon">⌑</span>
               <strong>Escanear nota fiscal</strong>
@@ -645,26 +659,42 @@ export default function Home() {
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                  multiple
+                  onChange={(event) => addFiles(event.target.files)}
                 />
                 Escolher da galeria
               </label>
             </div>
           ) : (
-            <div className="previewWrap">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={preview} alt="Pré-visualização da nota fiscal" />
+            <>
+              <div className="pagesGrid">
+                {previews.map((preview, index) => (
+                  <div className="pagePreview" key={preview}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={preview} alt={`Página ${index + 1} da nota fiscal`} />
+                    <span>Página {index + 1}</span>
+                    <button onClick={() => removePage(index)} aria-label={`Remover página ${index + 1}`}>×</button>
+                  </div>
+                ))}
+                <button className="addPageCamera" onClick={() => setScannerOpen(true)}>
+                  <strong>+</strong><span>Escanear página</span>
+                </button>
+                <label className="addPageGallery">
+                  <input type="file" accept="image/*" multiple onChange={(event) => addFiles(event.target.files)} />
+                  <strong>+</strong><span>Adicionar da galeria</span>
+                </label>
+              </div>
               {status === "reading" && (
-                <div className="readingOverlay">
-                  <span>Lendo documento… {progress}%</span>
+                <div className="multiReading">
+                  <span>Lendo página {currentPage} de {files.length}… {progress}%</span>
                   <div><i style={{ width: `${progress}%` }} /></div>
                 </div>
               )}
-            </div>
+            </>
           )}
 
-          <button className="primary" disabled={!file || status === "reading"} onClick={scan}>
-            {status === "reading" ? "Analisando nota…" : "Ler documento"}
+          <button className="primary" disabled={!files.length || status === "reading"} onClick={scan}>
+            {status === "reading" ? "Analisando páginas…" : `Ler ${files.length || ""} ${files.length === 1 ? "página" : "páginas"}`}
           </button>
           <p className="localNote">A imagem permanece neste dispositivo.</p>
           {status === "error" && <p className="error">Não foi possível ler a imagem. Tente uma foto mais nítida.</p>}
@@ -767,7 +797,7 @@ export default function Home() {
         <CameraScanner
           onClose={() => setScannerOpen(false)}
           onCapture={(capturedFile) => {
-            setFile(capturedFile);
+            setFiles((current) => [...current, capturedFile].slice(0, 10));
             setScannerOpen(false);
             setStatus("idle");
           }}

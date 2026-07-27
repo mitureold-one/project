@@ -331,6 +331,69 @@ main { min-height: 100vh; }
 }
 
 .previewWrap img { width: 100%; height: 100%; object-fit: contain; }
+.pagesGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  max-height: 370px;
+  overflow-y: auto;
+}
+.pagePreview, .addPageCamera, .addPageGallery {
+  position: relative;
+  min-height: 128px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #eeece3;
+}
+.pagePreview img { width: 100%; height: 128px; object-fit: cover; }
+.pagePreview > span {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 4px 7px;
+  border-radius: 99px;
+  background: rgba(25,56,47,.88);
+  color: white;
+  font-size: 9px;
+  font-weight: 750;
+}
+.pagePreview > button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255,255,255,.92);
+  color: #8b3d35;
+  font-size: 17px;
+}
+.addPageCamera, .addPageGallery {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-style: dashed;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.addPageCamera strong, .addPageGallery strong { font-size: 25px; line-height: 1; }
+.addPageGallery input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.multiReading {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: white;
+  font-size: 11px;
+}
+.multiReading > div { height: 4px; margin-top: 8px; border-radius: 4px; background: rgba(255,255,255,.2); overflow: hidden; }
+.multiReading i { display: block; height: 100%; background: var(--lime); transition: width .2s; }
 .readingOverlay {
   position: absolute;
   inset: auto 14px 14px;
