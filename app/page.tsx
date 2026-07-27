@@ -91,30 +91,75 @@ const find = (text: string, expression: RegExp) =>
 
 function parseItems(lines: string[]): Item[] {
   const items: Item[] = [];
+  const fiscalDigits = (value: string) =>
+    value
+      .toUpperCase()
+      .replace(/[OQ]/g, "0")
+      .replace(/S/g, "5")
+      .replace(/\D/g, "");
+  const tolerantMoney = (value?: string) => {
+    if (!value) return null;
+    const cleaned = value
+      .toUpperCase()
+      .replace(/[€C]/g, "0")
+      .replace(/[^\d.,]/g, "");
+    return money(cleaned);
+  };
   for (const rawLine of lines) {
     const line = rawLine
       .replace(/[|;[\]()]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const match = line.match(
-      /^(\d{4,10})\s+(.+?)\s+(\d{8})\s+([0-9OS.]{3,4})\s+(\d{4})\s+(UN|UM|KG|LT|CX)\s+(\d+)\s+([\d.,]+)\s+([\d.,]+)/i,
+      /^[^\dA-Z]*([0-9OS]{2,10})\s+(.+?)\s+([0-9OSQ]{8})\s+([0-9A-Z.]{3,4})\s+([0-9OSQ]{4})\s+(UN|UM|IN|JN|NS|KG|LT|CX|SO)\s+([0-9S]{1,3})\s+([\d.,€C]+)(?:\s+([\d.,€C$S]+))?/i,
     );
     if (!match) continue;
+    const codigo = fiscalDigits(match[1]);
+    const ncm = fiscalDigits(match[3]);
     const cst = match[4]
+      .toUpperCase()
       .replace(/\./g, "")
-      .replace(/O/gi, "0")
-      .replace(/S/gi, "6")
+      .replace(/O/g, "0")
+      .replace(/S/g, "6")
+      .replace(/\D/g, "")
       .slice(-3);
+    const cfop = fiscalDigits(match[5]);
+    const quantidade = Number(match[7].toUpperCase().replace(/S/g, "5"));
+    const valorUnitario = tolerantMoney(match[8]);
+    const detectedTotal = tolerantMoney(match[9]);
+    const calculatedTotal =
+      valorUnitario !== null
+        ? Number((quantidade * valorUnitario).toFixed(2))
+        : null;
+    const valorTotal =
+      detectedTotal !== null &&
+      calculatedTotal !== null &&
+      Math.abs(detectedTotal - calculatedTotal) <= 0.06
+        ? detectedTotal
+        : calculatedTotal ?? detectedTotal;
+    if (
+      !codigo ||
+      ncm.length !== 8 ||
+      cst.length !== 3 ||
+      cfop.length !== 4 ||
+      !Number.isFinite(quantidade) ||
+      quantidade <= 0 ||
+      valorUnitario === null
+    ) {
+      continue;
+    }
     items.push({
-      codigo: match[1],
-      descricao: match[2],
-      ncm: match[3],
+      codigo,
+      descricao: match[2].replace(/^[^A-ZÀ-Ú0-9]+/i, "").trim(),
+      ncm,
       cst,
-      cfop: match[5],
-      unidade: match[6].toUpperCase() === "UM" ? "UN" : match[6].toUpperCase(),
-      quantidade: money(match[7]),
-      valorUnitario: money(match[8]),
-      valorTotal: money(match[9]),
+      cfop,
+      unidade: ["UM", "IN", "JN", "NS", "SO"].includes(match[6].toUpperCase())
+        ? "UN"
+        : match[6].toUpperCase(),
+      quantidade,
+      valorUnitario,
+      valorTotal,
       baseIcms: null,
       valorIcms: null,
       valorIpi: null,
