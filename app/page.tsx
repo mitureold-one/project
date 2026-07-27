@@ -22,6 +22,7 @@ type Item = {
 type Nota = {
   tipo: "DANFE";
   rede: "Mateus";
+  setor: "panificacao" | "darkstore" | "desconhecido";
   numero: string;
   serie: string;
   chaveAcesso: string;
@@ -40,6 +41,7 @@ type Nota = {
     valorNota: number | null;
     baseIcms: number | null;
     valorIcms: number | null;
+    valorFrete: number | null;
   };
   transporte: {
     volumes: number | null;
@@ -54,6 +56,7 @@ type Nota = {
 const emptyNota: Nota = {
   tipo: "DANFE",
   rede: "Mateus",
+  setor: "desconhecido",
   numero: "",
   serie: "",
   chaveAcesso: "",
@@ -72,6 +75,7 @@ const emptyNota: Nota = {
     valorNota: null,
     baseIcms: null,
     valorIcms: null,
+    valorFrete: null,
   },
   transporte: {
     volumes: null,
@@ -91,6 +95,16 @@ const find = (text: string, expression: RegExp) =>
 
 function parseItems(lines: string[]): Item[] {
   const items: Item[] = [];
+  const candidateLines = [...lines];
+  for (let index = 0; index < lines.length - 1; index++) {
+    const current = lines[index].replace(/\s+/g, " ").trim();
+    const next = lines[index + 1].replace(/\s+/g, " ").trim();
+    const startsLikeProduct = /^[^\dA-Z]*[0-9OS]{2,10}\s+[A-ZÀ-Ú]/i.test(current);
+    const hasFiscalColumns = /[0-9OSQ]{8}\s+(?:\||\[|\s)/i.test(current);
+    if (startsLikeProduct && !hasFiscalColumns && /[0-9OSQ]{8}/i.test(next)) {
+      candidateLines.push(`${current} ${next}`);
+    }
+  }
   const fiscalDigits = (value: string) =>
     value
       .toUpperCase()
@@ -105,7 +119,7 @@ function parseItems(lines: string[]): Item[] {
       .replace(/[^\d.,]/g, "");
     return money(cleaned);
   };
-  for (const rawLine of lines) {
+  for (const rawLine of candidateLines) {
     const line = rawLine
       .replace(/[|;[\]()]/g, " ")
       .replace(/\s+/g, " ")
@@ -148,6 +162,7 @@ function parseItems(lines: string[]): Item[] {
     ) {
       continue;
     }
+    if (items.some((item) => item.codigo === codigo && item.ncm === ncm)) continue;
     items.push({
       codigo,
       descricao: match[2]
@@ -188,11 +203,29 @@ function extractNota(text: string): Nota {
   const itemsTotal = Number(
     items.reduce((sum, item) => sum + (item.valorTotal ?? 0), 0).toFixed(2),
   );
+  const currencyValuesNear = (label: RegExp, count: number) => {
+    const index = normalized.search(label);
+    if (index < 0) return [] as number[];
+    return [...normalized.slice(index, index + 650).matchAll(/R\$\s*([\d.,]+)/gi)]
+      .slice(0, count)
+      .map((entry) => money(entry[1]))
+      .filter((value): value is number => value !== null);
+  };
+  const taxRow = currencyValuesNear(/VALOR TOTAL DOS PRODUTO/i, 5);
+  const totalsRow = currencyValuesNear(/VALOR TOTAL DA NOTA/i, 6);
+  const detectedProducts = taxRow.length >= 5 ? taxRow[4] : null;
+  const detectedFreight = totalsRow.length >= 1 ? totalsRow[0] : null;
+  const detectedInvoiceTotal = totalsRow.length >= 6 ? totalsRow[5] : null;
   const recipientIndex = lines.findIndex((line) => /DESTINAT[ÁA]RIO|REMETENTE/i.test(line));
   const recipientLine = recipientIndex >= 0 ? lines[recipientIndex + 1] ?? "" : "";
 
   return {
     ...emptyNota,
+    setor: /MATEUS\s*EXPRESS|DELIVERY|DARKSTORE/i.test(normalized)
+      ? "darkstore"
+      : /PANIFICA/i.test(normalized)
+        ? "panificacao"
+        : "desconhecido",
     numero: number,
     serie,
     chaveAcesso: digits(chave).slice(0, 44),
@@ -212,10 +245,11 @@ function extractNota(text: string): Nota {
     },
     totais: {
       ...emptyNota.totais,
-      valorProdutos: money(
+      valorProdutos: detectedProducts ?? money(
         find(normalized, /VALOR TOTAL DOS PRODUTOS[^\d]*([\d.]+,\d{2})/i),
       ) ?? (itemsTotal || null),
       valorNota: (() => {
+        if (detectedInvoiceTotal && detectedInvoiceTotal > 0) return detectedInvoiceTotal;
         const detected =
           money(find(normalized, /VALOR TOTAL DA NOTA[^\d]*([\d.]+,\d{2})/i)) ??
           money(lastTotal);
@@ -227,6 +261,7 @@ function extractNota(text: string): Nota {
       valorIcms: money(
         find(normalized, /VALOR DO ICMS[^\d]*([\d.]+,\d{2})/i),
       ),
+      valorFrete: detectedFreight,
     },
     transporte: { ...emptyNota.transporte },
     itens: items,
