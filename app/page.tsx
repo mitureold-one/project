@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Item = {
   codigo: string;
@@ -221,6 +221,183 @@ function Field({
   );
 }
 
+function CameraScanner({
+  onCapture,
+  onClose,
+}: {
+  onCapture: (file: File) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const lastPixels = useRef<Uint8ClampedArray | null>(null);
+  const readyFrames = useRef(0);
+  const captured = useRef(false);
+  const [message, setMessage] = useState("Iniciando câmera…");
+  const [quality, setQuality] = useState<"waiting" | "warn" | "ready">("waiting");
+  const [autoCapture, setAutoCapture] = useState(true);
+  const [error, setError] = useState("");
+
+  function stopCamera() {
+    if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }
+
+  function capture() {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || captured.current) return;
+    captured.current = true;
+    const cropX = Math.round(video.videoWidth * 0.06);
+    const cropY = Math.round(video.videoHeight * 0.035);
+    const cropWidth = Math.round(video.videoWidth * 0.88);
+    const cropHeight = Math.round(video.videoHeight * 0.93);
+    const canvas = document.createElement("canvas");
+    canvas.width = cropWidth;
+    canvas.height = cropHeight;
+    canvas.getContext("2d")?.drawImage(
+      video,
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight,
+      0,
+      0,
+      cropWidth,
+      cropHeight,
+    );
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        captured.current = false;
+        return;
+      }
+      stopCamera();
+      onCapture(new File([blob], `danfe-${Date.now()}.jpg`, { type: "image/jpeg" }));
+    }, "image/jpeg", 0.96);
+  }
+
+  useEffect(() => {
+    let active = true;
+    const sampleCanvas = document.createElement("canvas");
+    sampleCanvas.width = 160;
+    sampleCanvas.height = 120;
+    const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently: true });
+    let lastCheck = 0;
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 2560 },
+            height: { ideal: 1920 },
+          },
+          audio: false,
+        });
+        if (!active) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const analyze = (time: number) => {
+          const video = videoRef.current;
+          if (!active || !video || !sampleContext) return;
+          if (time - lastCheck > 450 && video.readyState >= 2) {
+            lastCheck = time;
+            sampleContext.drawImage(video, 0, 0, 160, 120);
+            const pixels = sampleContext.getImageData(0, 0, 160, 120).data;
+            let brightness = 0;
+            let sharpness = 0;
+            let movement = 0;
+            const gray = new Uint8ClampedArray(160 * 120);
+            for (let i = 0; i < gray.length; i++) {
+              const offset = i * 4;
+              gray[i] = pixels[offset] * 0.299 + pixels[offset + 1] * 0.587 + pixels[offset + 2] * 0.114;
+              brightness += gray[i];
+              if (lastPixels.current) movement += Math.abs(gray[i] - lastPixels.current[i]);
+            }
+            for (let y = 1; y < 119; y += 2) {
+              for (let x = 1; x < 159; x += 2) {
+                const i = y * 160 + x;
+                sharpness += Math.abs(4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - 160] - gray[i + 160]);
+              }
+            }
+            brightness /= gray.length;
+            movement = lastPixels.current ? movement / gray.length : 99;
+            sharpness /= 80 * 60;
+            lastPixels.current = gray;
+
+            let nextMessage = "Segure o celular firme";
+            let nextQuality: "waiting" | "warn" | "ready" = "waiting";
+            if (brightness < 55) {
+              nextMessage = "Pouca luz — ilumine melhor a nota";
+              nextQuality = "warn";
+            } else if (brightness > 225) {
+              nextMessage = "Muito reflexo — mude o ângulo";
+              nextQuality = "warn";
+            } else if (sharpness < 20) {
+              nextMessage = "Imagem desfocada — aproxime devagar";
+              nextQuality = "warn";
+            } else if (movement > 10) {
+              nextMessage = "Segure o celular firme";
+            } else {
+              nextMessage = autoCapture ? "Ótimo! Capturando…" : "Imagem pronta";
+              nextQuality = "ready";
+            }
+            setMessage(nextMessage);
+            setQuality(nextQuality);
+            readyFrames.current = nextQuality === "ready" ? readyFrames.current + 1 : 0;
+            if (autoCapture && readyFrames.current >= 3) capture();
+          }
+          frameRef.current = requestAnimationFrame(analyze);
+        };
+        frameRef.current = requestAnimationFrame(analyze);
+      } catch {
+        setError("Não foi possível abrir a câmera. Confira a permissão do navegador.");
+      }
+    }
+
+    start();
+    return () => {
+      active = false;
+      stopCamera();
+    };
+  }, [autoCapture]);
+
+  return (
+    <div className="scanner" role="dialog" aria-modal="true" aria-label="Scanner de nota fiscal">
+      <video ref={videoRef} playsInline muted />
+      <div className="scannerShade" />
+      <div className={`documentFrame ${quality}`}>
+        <i className="corner tl" /><i className="corner tr" />
+        <i className="corner bl" /><i className="corner br" />
+        <span>Alinhe as quatro bordas da folha</span>
+      </div>
+      <div className="scannerTop">
+        <button onClick={() => { stopCamera(); onClose(); }} aria-label="Fechar câmera">×</button>
+        <strong>Escanear DANFE</strong>
+        <span />
+      </div>
+      <div className="scannerBottom">
+        {error ? <p className="scannerError">{error}</p> : <p className={`qualityMessage ${quality}`}><i />{message}</p>}
+        <div className="scannerControls">
+          <label className="autoToggle">
+            <input type="checkbox" checked={autoCapture} onChange={(event) => setAutoCapture(event.target.checked)} />
+            <span>Automático</span>
+          </label>
+          <button className="shutter" onClick={capture} aria-label="Tirar foto"><i /></button>
+          <span className="controlSpacer" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
@@ -228,6 +405,7 @@ export default function Home() {
   const [status, setStatus] = useState<"idle" | "reading" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   useEffect(() => {
     if (!file) {
@@ -361,18 +539,20 @@ export default function Home() {
           </div>
 
           {!preview ? (
-            <label className="dropzone">
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              />
+            <div className="dropzone">
               <span className="cameraIcon">⌑</span>
-              <strong>Fotografar ou escolher nota</strong>
-              <small>Enquadre a folha inteira e evite sombras</small>
-              <span className="selectButton">Selecionar imagem</span>
-            </label>
+              <strong>Escanear nota fiscal</strong>
+              <small>A câmera ajuda a alinhar e verificar a nitidez</small>
+              <button className="scanButton" onClick={() => setScannerOpen(true)}>Abrir scanner</button>
+              <label className="galleryButton">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                />
+                Escolher da galeria
+              </label>
+            </div>
           ) : (
             <div className="previewWrap">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -486,6 +666,16 @@ export default function Home() {
         <span>Primeiro protótipo · DANFE Mateus</span>
         <span>JPEG, PNG ou foto da câmera</span>
       </footer>
+      {scannerOpen && (
+        <CameraScanner
+          onClose={() => setScannerOpen(false)}
+          onCapture={(capturedFile) => {
+            setFile(capturedFile);
+            setScannerOpen(false);
+            setStatus("idle");
+          }}
+        />
+      )}
     </main>
   );
 }
