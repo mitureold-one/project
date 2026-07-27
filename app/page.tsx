@@ -134,7 +134,7 @@ function parseItems(lines: string[]): Item[] {
     const valorTotal =
       detectedTotal !== null &&
       calculatedTotal !== null &&
-      Math.abs(detectedTotal - calculatedTotal) <= 0.06
+      Math.abs(detectedTotal - calculatedTotal) <= 0.011
         ? detectedTotal
         : calculatedTotal ?? detectedTotal;
     if (
@@ -150,7 +150,10 @@ function parseItems(lines: string[]): Item[] {
     }
     items.push({
       codigo,
-      descricao: match[2].replace(/^[^A-ZÀ-Ú0-9]+/i, "").trim(),
+      descricao: match[2]
+        .replace(/^[^A-ZÀ-Ú0-9]+/i, "")
+        .replace(/\s+(UN|UM)$/i, "")
+        .trim(),
       ncm,
       cst,
       cfop,
