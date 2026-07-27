@@ -92,27 +92,34 @@ const find = (text: string, expression: RegExp) =>
 function parseItems(lines: string[]): Item[] {
   const items: Item[] = [];
   for (const rawLine of lines) {
-    const line = rawLine.replace(/[|;]/g, " ").replace(/\s+/g, " ").trim();
+    const line = rawLine
+      .replace(/[|;[\]()]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     const match = line.match(
-      /^(\d{4,10})\s+(.+?)\s+(\d{8})\s+(\d{2,3})\s+(\d{4})\s+([A-Z]{1,3})\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?(?:\s+([\d.,]+))?$/i,
+      /^(\d{4,10})\s+(.+?)\s+(\d{8})\s+([0-9OS.]{3,4})\s+(\d{4})\s+(UN|UM|KG|LT|CX)\s+(\d+)\s+([\d.,]+)\s+([\d.,]+)/i,
     );
     if (!match) continue;
-    const values = match.slice(7).map((value) => money(value));
+    const cst = match[4]
+      .replace(/\./g, "")
+      .replace(/O/gi, "0")
+      .replace(/S/gi, "6")
+      .slice(-3);
     items.push({
       codigo: match[1],
       descricao: match[2],
       ncm: match[3],
-      cst: match[4],
+      cst,
       cfop: match[5],
-      unidade: match[6].toUpperCase(),
-      quantidade: values[0],
-      valorUnitario: values[1],
-      valorTotal: values[2],
-      baseIcms: values[3] ?? null,
-      valorIcms: values[4] ?? null,
-      valorIpi: values[5] ?? null,
-      aliquotaIcms: values[6] ?? null,
-      aliquotaIpi: values[7] ?? null,
+      unidade: match[6].toUpperCase() === "UM" ? "UN" : match[6].toUpperCase(),
+      quantidade: money(match[7]),
+      valorUnitario: money(match[8]),
+      valorTotal: money(match[9]),
+      baseIcms: null,
+      valorIcms: null,
+      valorIpi: null,
+      aliquotaIcms: null,
+      aliquotaIpi: null,
     });
   }
   return items;
@@ -129,6 +136,10 @@ function extractNota(text: string): Nota {
   const number = find(normalized, /N[º°o]?\s*(\d{4,12})/i);
   const serie = find(normalized, /S[EÉ]RIE\s*:?\s*(\d{1,4})/i);
   const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+  const items = parseItems(lines);
+  const itemsTotal = Number(
+    items.reduce((sum, item) => sum + (item.valorTotal ?? 0), 0).toFixed(2),
+  );
   const recipientIndex = lines.findIndex((line) => /DESTINAT[ÁA]RIO|REMETENTE/i.test(line));
   const recipientLine = recipientIndex >= 0 ? lines[recipientIndex + 1] ?? "" : "";
 
@@ -155,10 +166,13 @@ function extractNota(text: string): Nota {
       ...emptyNota.totais,
       valorProdutos: money(
         find(normalized, /VALOR TOTAL DOS PRODUTOS[^\d]*([\d.]+,\d{2})/i),
-      ),
-      valorNota: money(
-        find(normalized, /VALOR TOTAL DA NOTA[^\d]*([\d.]+,\d{2})/i),
-      ) ?? money(lastTotal),
+      ) ?? (itemsTotal || null),
+      valorNota: (() => {
+        const detected =
+          money(find(normalized, /VALOR TOTAL DA NOTA[^\d]*([\d.]+,\d{2})/i)) ??
+          money(lastTotal);
+        return detected && detected > 0 ? detected : itemsTotal || null;
+      })(),
       baseIcms: money(
         find(normalized, /BASE DE C[ÁA]LCULO DO ICMS[^\d]*([\d.]+,\d{2})/i),
       ),
@@ -167,7 +181,7 @@ function extractNota(text: string): Nota {
       ),
     },
     transporte: { ...emptyNota.transporte },
-    itens: parseItems(lines),
+    itens: items,
     informacoesComplementares: find(
       normalized,
       /INFORMA[ÇC][ÕO]ES COMPLEMENTARES\s*\n?([\s\S]+)$/i,
